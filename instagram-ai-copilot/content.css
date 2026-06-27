@@ -1,0 +1,31 @@
+#ai-copilot-reply-btn {
+  background: linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%);
+  color: white;
+  border: none;
+  border-radius: 20px;
+  padding: 8px 16px;
+  margin: 0px 16px 8px 16px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.1s;
+  align-self: flex-start;
+  z-index: 1000;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+}
+
+#ai-copilot-reply-btn:hover {
+  opacity: 0.9;
+  transform: scale(1.02);
+}
+
+#ai-copilot-reply-btn:active {
+  transform: scale(0.98);
+}
+
+#ai-copilot-reply-btn:disabled {
+  background: #bcc0c4;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
