@@ -7,8 +7,6 @@
     "storage"
   ],
   "host_permissions": [
-    "https://*.instagram.com/*",
-    "https://web.whatsapp.com/*",
     "https://generativelanguage.googleapis.com/*"
   ],
   "background": {

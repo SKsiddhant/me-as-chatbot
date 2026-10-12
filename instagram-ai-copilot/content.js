@@ -76,7 +76,8 @@ observer.observe(document.body, { childList: true, subtree: true });
 async function handleGenerateClick(e) {
   e.preventDefault();
   
-  const btn = document.getElementById('ai-copilot-reply-btn');
+  // Use the clicked element: the page can re-render and remove the button while we wait.
+  const btn = e.currentTarget;
   btn.innerText = '⏳ Thinking...';
   btn.disabled = true;
 
@@ -90,9 +91,9 @@ async function handleGenerateClick(e) {
                            
     if (textNodes.length > 0) {
        if (currentPlatform === 'whatsapp') {
-          contextText += textNodes.map(n => n.innerText).join(' ') + "\\n";
+          contextText += textNodes.map(n => n.innerText).join(' ') + "\n";
        } else {
-          contextText += textNodes.map(n => n.textContent).join(' ') + "\\n";
+          contextText += textNodes.map(n => n.textContent).join(' ') + "\n";
        }
     }
   });
@@ -101,19 +102,26 @@ async function handleGenerateClick(e) {
     contextText = "No recent messages found.";
   }
 
-  chrome.runtime.sendMessage({
-    action: "generateReply", 
-    context: contextText
-  }, (response) => {
-    btn.innerText = '✨ AI Reply';
-    btn.disabled = false;
-    
-    if (response && response.success) {
-      injectText(response.reply);
-    } else {
-      alert("AI Copilot Error: " + (response ? response.error : "Unknown error"));
-    }
-  });
+  const reset = () => { btn.innerText = '✨ AI Reply'; btn.disabled = false; };
+  try {
+    chrome.runtime.sendMessage({
+      action: "generateReply",
+      context: contextText
+    }, (response) => {
+      const runtimeError = chrome.runtime.lastError; // must be read or Chrome logs "Unchecked runtime.lastError"
+      reset();
+
+      if (!runtimeError && response && response.success) {
+        injectText(response.reply);
+      } else {
+        alert("AI Copilot Error: " + (runtimeError ? runtimeError.message : (response ? response.error : "Unknown error")));
+      }
+    });
+  } catch (err) {
+    // Thrown synchronously after the extension is reloaded/updated ("Extension context invalidated").
+    reset();
+    alert("AI Copilot Error: the extension was updated. Please refresh this page.");
+  }
 }
 
 function injectText(text) {
