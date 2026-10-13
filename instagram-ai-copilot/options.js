@@ -16,28 +16,32 @@ Context of the chat:
 Respond as me. Output ONLY the raw message I would send, absolutely nothing else. No quotes.`;
 
 function restore_options() {
-  chrome.storage.sync.get({
-    apiKey: '',
-    prompt: defaultPrompt
-  }, function(items) {
-    document.getElementById('apiKey').value = items.apiKey;
-    document.getElementById('prompt').value = items.prompt;
+  // The key is kept in storage.local (not synced to other devices). Older versions saved it to
+  // storage.sync, so fall back to that and it moves over the next time Save is clicked.
+  chrome.storage.local.get({ apiKey: '' }, function(local) {
+    chrome.storage.sync.get({
+      apiKey: '',
+      prompt: defaultPrompt
+    }, function(items) {
+      document.getElementById('apiKey').value = local.apiKey || items.apiKey;
+      document.getElementById('prompt').value = items.prompt;
+    });
   });
 }
 
 function save_options() {
-  var key = document.getElementById('apiKey').value;
+  var key = document.getElementById('apiKey').value.trim();
   var promptStr = document.getElementById('prompt').value;
-  
-  chrome.storage.sync.set({
-    apiKey: key,
-    prompt: promptStr
-  }, function() {
-    var status = document.getElementById('status');
-    status.style.display = 'block';
-    setTimeout(function() {
-      status.style.display = 'none';
-    }, 2000);
+
+  chrome.storage.local.set({ apiKey: key }, function() {
+    chrome.storage.sync.remove('apiKey');  // stop syncing the key to other devices
+    chrome.storage.sync.set({ prompt: promptStr }, function() {
+      var status = document.getElementById('status');
+      status.style.display = 'block';
+      setTimeout(function() {
+        status.style.display = 'none';
+      }, 2000);
+    });
   });
 }
 

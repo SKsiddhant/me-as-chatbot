@@ -1,3 +1,10 @@
+const MODEL = "gemini-3.5-flash";
+const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
+const MAX_ATTEMPTS = 3;
+
+// Errors that retrying cannot fix (bad key, blocked prompt, empty answer, missing settings).
+class FatalError extends Error {}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "generateReply") {
     generateReply(request.context)
@@ -7,81 +14,79 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-async function generateReply(context) {
-  return new Promise((resolve, reject) => {
-    chrome.storage.sync.get(['apiKey', 'prompt'], async function(items) {
-      try {
-        if (!items.apiKey) {
-          reject(new Error("API Key not set. Please set it in the extension options."));
-          return;
-        }
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-        const apiKey = items.apiKey.trim();
-        const systemPrompt = items.prompt.replace('{context}', context);
-        
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${apiKey}`;
-        
-        let attempts = 0;
-        let response;
-        let errorData;
-
-        while (attempts < 3) {
-          try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
-
-            response = await fetch(url, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              signal: controller.signal,
-              body: JSON.stringify({
-                contents: [{
-                  parts: [{
-                    text: systemPrompt
-                  }]
-                }],
-                generationConfig: {
-                  temperature: 0.8,
-                  maxOutputTokens: 50,
-                }
-              })
-            });
-            clearTimeout(timeoutId);
-
-            if (!response.ok) {
-              errorData = await response.json();
-              if (response.status === 503 || response.status === 429) {
-                attempts++;
-                if (attempts < 3) {
-                  console.log(`High demand, retrying in ${attempts * 2} seconds...`);
-                  await new Promise(r => setTimeout(r, attempts * 2000));
-                  continue;
-                }
-              }
-              console.error("Gemini API Error:", errorData);
-              const msg = (errorData && errorData.error && errorData.error.message) ? errorData.error.message : "Check your API key.";
-              throw new Error("Google AI Error: " + msg);
-            }
-            
-            break; // Success
-          } catch(e) {
-            if (attempts >= 2) throw e;
-            attempts++;
-            await new Promise(r => setTimeout(r, attempts * 2000));
-          }
-        }
-
-        const data = await response.json();
-        if (data.candidates && data.candidates[0].content.parts[0].text) {
-          resolve(data.candidates[0].content.parts[0].text.trim());
-        } else {
-          throw new Error("Unexpected response format from Gemini.");
-        }
-      } catch (e) {
-        reject(e);
-      }
+// The API key lives in chrome.storage.local so it is NOT copied to every device signed in to this
+// Chrome profile (storage.sync does that). Older versions saved it to sync, so fall back to that.
+function getSettings() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(['apiKey'], (local) => {
+      chrome.storage.sync.get(['apiKey', 'prompt'], (sync) => {
+        resolve({ apiKey: (local.apiKey || sync.apiKey || '').trim(), prompt: sync.prompt || '' });
+      });
     });
   });
+}
+
+function extractReply(data) {
+  const candidate = data && data.candidates && data.candidates[0];
+  const parts = candidate && candidate.content && candidate.content.parts;
+  const text = Array.isArray(parts) ? parts.map(p => p.text || '').join('').trim() : '';
+  if (text) return text;
+  if (data && data.promptFeedback && data.promptFeedback.blockReason) {
+    throw new FatalError("Google AI blocked this request: " + data.promptFeedback.blockReason);
+  }
+  const why = candidate && candidate.finishReason ? ` (finish reason: ${candidate.finishReason})` : "";
+  throw new FatalError("Google AI returned no text" + why + ".");
+}
+
+async function generateReply(context) {
+  const { apiKey, prompt } = await getSettings();
+  if (!apiKey) throw new FatalError("API Key not set. Please set it in the extension options.");
+  if (!prompt) throw new FatalError("No personality prompt saved. Open the extension options and click Save.");
+
+  // A function replacer keeps "$&", "$1" etc. in chat messages from being treated as patterns.
+  // If the prompt has no {context} placeholder, append the chat so it is never silently dropped.
+  const text = prompt.includes('{context}')
+    ? prompt.replace('{context}', () => context)
+    : `${prompt}\n\nContext of the chat:\n${context}`;
+
+  const body = JSON.stringify({
+    contents: [{ parts: [{ text }] }],
+    generationConfig: { temperature: 0.8, maxOutputTokens: 50 }
+  });
+
+  let lastError;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    try {
+      const response = await fetch(ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          // Header, not "?key=" in the URL, so the key doesn't end up in logs or error messages.
+          'x-goog-api-key': apiKey,
+        },
+        signal: controller.signal,
+        body,
+      });
+
+      if (response.ok) return extractReply(await response.json());
+
+      const errorData = await response.json().catch(() => null);
+      const msg = (errorData && errorData.error && errorData.error.message) || `HTTP ${response.status}`;
+      const error = new Error("Google AI Error: " + msg);
+      // Only overload / rate limit / server errors are worth retrying. A 400/403 (bad key) never is.
+      if (response.status === 429 || response.status >= 500) lastError = error;
+      else throw new FatalError(error.message);
+    } catch (e) {
+      if (e instanceof FatalError) throw e;
+      lastError = e.name === 'AbortError' ? new Error("The request to Google AI timed out.") : e;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    if (attempt < MAX_ATTEMPTS) await sleep(attempt * 2000);
+  }
+  throw lastError;
 }
